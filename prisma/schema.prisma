@@ -1,0 +1,69 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  CUSTOMER
+  ADMIN
+}
+
+enum AccountType {
+  SAVINGS
+  CURRENT
+}
+
+enum TransactionType {
+  CREDIT
+  DEBIT
+}
+
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  phone        String?
+  passwordHash String
+  role         Role     @default(CUSTOMER)
+  account      Account?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Account {
+  id            String        @id @default(uuid())
+  accountNumber String        @unique
+  accountType   AccountType   @default(SAVINGS)
+  balance       Float         @default(0)
+  isFrozen      Boolean       @default(false)
+  userId        String        @unique
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sent          Transaction[] @relation("SentTransactions")
+  received      Transaction[] @relation("ReceivedTransactions")
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+}
+
+model Transaction {
+  id            String          @id @default(uuid())
+  idempotencyKey String?        @unique
+  amount        Float
+  type          TransactionType
+  note          String?
+  fromAccountId String?
+  toAccountId   String?
+  fromAccount   Account?        @relation("SentTransactions", fields: [fromAccountId], references: [id])
+  toAccount     Account?        @relation("ReceivedTransactions", fields: [toAccountId], references: [id])
+  createdAt     DateTime        @default(now())
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  action    String
+  details   String?
+  createdAt DateTime @default(now())
+}

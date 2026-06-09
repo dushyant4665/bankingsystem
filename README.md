@@ -1,124 +1,106 @@
 # Banking System API
 
-Simple banking backend made with Node.js, Express, TypeScript, Prisma, PostgreSQL, JWT, bcrypt, and Zod.
+Simple banking backend built with Node.js, Express, TypeScript, Prisma, and PostgreSQL.
 
-## Features
+It covers the basic backend flow of a banking system:
 
-- Signup and login
-- JWT authentication
-- User profile
-- Account balance
-- Deposit money
-- Withdraw money
-- Transfer money
-- Transaction history
-- Admin dashboard
-- Admin user list
-- Freeze and unfreeze accounts
-- Audit logs
+- user signup and login
+- one account per user
+- balance, deposit, withdraw, transfer
+- transaction history
+- admin controls
+- audit logs
 
-## Setup
+## How It Works
 
-Create `.env` in the project root:
-
-```env
-DATABASE_URL="postgresql://postgres:your_password@localhost:5432/banking?schema=public"
-JWT_SECRET="change-this-secret"
-PORT=3000
-NODE_ENV="development"
-ADMIN_EMAIL="admin@example.com"
+```mermaid
+flowchart TD
+    A[Client] --> B[Routes]
+    B --> C[Auth Middleware]
+    C --> D[Controllers]
+    D --> E[Services]
+    E --> F[Prisma]
+    F --> G[(PostgreSQL)]
 ```
 
-Install and run:
+The project is split by responsibility:
 
-```bash
-npm install
-npm run prisma:generate
-npm run prisma:migrate
-npm run dev
+- `routes` define endpoints
+- `middleware` checks token and admin access
+- `controllers` handle request and response
+- `services` contain banking logic
+- `prisma` handles database operations
+
+## Main Parts
+
+### Auth
+
+Handles signup, login, password hashing, and JWT token generation.
+
+### Account and Transactions
+
+Each user gets one account.
+The system supports:
+
+- balance check
+- deposit
+- withdraw
+- transfer between accounts
+- transaction history
+
+Transfer logic checks:
+
+- valid sender
+- valid receiver
+- frozen account status
+- sufficient balance
+- same-account transfer prevention
+
+### Admin
+
+Admin can:
+
+- view dashboard summary
+- list users
+- freeze accounts
+- unfreeze accounts
+- read audit logs
+
+The admin role is assigned when signup email matches `ADMIN_EMAIL`.
+
+## Database Design
+
+```mermaid
+erDiagram
+    User ||--o| Account : owns
+    Account ||--o{ Transaction : sends
+    Account ||--o{ Transaction : receives
 ```
 
-Build:
+Main models:
 
-```bash
-npm run build
-npm start
-```
+- `User`
+- `Account`
+- `Transaction`
+- `AuditLog`
 
-## API
-
-Public routes:
+## Project Structure
 
 ```text
-GET  /
-GET  /health
-GET  /swagger.json
-POST /api/auth/signup
-POST /api/auth/login
+src/
+  config/
+  controllers/
+  middleware/
+  routes/
+  services/
+  index.ts
+
+prisma/
+  schema.prisma
+  migrations/
 ```
 
-User routes need this header:
+## Summary
 
-```text
-Authorization: Bearer YOUR_TOKEN
-```
-
-```text
-GET  /api/users/me
-GET  /api/transactions/balance
-POST /api/transactions/deposit
-POST /api/transactions/withdraw
-POST /api/transactions/transfer
-GET  /api/transactions/history
-```
-
-Admin routes:
-
-```text
-GET   /api/admin/dashboard
-GET   /api/admin/users
-GET   /api/admin/audit-logs
-PATCH /api/admin/accounts/:accountNumber/freeze
-PATCH /api/admin/accounts/:accountNumber/unfreeze
-```
-
-## Example Bodies
-
-Signup:
-
-```json
-{
-  "name": "Dushyant",
-  "email": "dushyant@example.com",
-  "password": "123456",
-  "phone": "9530253134"
-}
-```
-
-Login:
-
-```json
-{
-  "email": "dushyant@example.com",
-  "password": "123456"
-}
-```
-
-Deposit or withdraw:
-
-```json
-{
-  "amount": 500,
-  "note": "Cash"
-}
-```
-
-Transfer:
-
-```json
-{
-  "toAccountNumber": "ACC123456789",
-  "amount": 100,
-  "note": "Payment"
-}
-```
+This project keeps the code simple by separating HTTP handling, auth checks, business logic, and database access.
+That makes the backend easier to read, test, and extend.

@@ -1,8 +1,6 @@
 # Banking System API
 
-Simple banking backend built with Node.js, Express, TypeScript, Prisma, and PostgreSQL.
-
-It covers the basic backend flow of a banking system:
+Banking system built with Node.js, Express, TypeScript, Prisma, and PostgreSQL.
 
 - user signup and login
 - one account per user
@@ -99,8 +97,3 @@ prisma/
   schema.prisma
   migrations/
 ```
-
-## Summary
-
-This project keeps the code simple by separating HTTP handling, auth checks, business logic, and database access.
-That makes the backend easier to read, test, and extend.

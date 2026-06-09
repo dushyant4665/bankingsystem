@@ -1,148 +1,97 @@
 import { z } from "zod";
 import { prisma } from "../config/database";
 
-const transferSchema = z.object({
-  toAccountNumber: z.string().trim().min(1, "Receiver account number is required"),
-  amount: z.number().positive("Amount must be greater than zero"),
+const moneySchema = z.object({
+  amount: z.coerce.number().positive(),
   note: z.string().trim().optional(),
-  idempotencyKey: z.string().trim().min(8, "Idempotency key must be at least 8 characters").optional(),
 });
 
-type TransferInput = z.infer<typeof transferSchema>;
+const transferSchema = moneySchema.extend({
+  toAccountNumber: z.string().trim().min(1),
+});
 
-const MAX_TRANSFER_AMOUNT = 50000;
-const DEFAULT_PAGE = 1;
-const DEFAULT_LIMIT = 10;
-const MAX_LIMIT = 50;
-
-function checkTransferRules(amount: number) {
-  if (amount > MAX_TRANSFER_AMOUNT) {
-    throw new Error("Transfer blocked by anomaly rule: amount is too high");
-  }
-}
-
-export async function getUserAccount(userId: string) {
-  const account = await prisma.account.findUnique({
-    where: { userId },
-  });
-
-  if (!account) {
-    throw new Error("Account not found");
-  }
-
+async function myAccount(userId: string) {
+  const account = await prisma.account.findUnique({ where: { userId } });
+  if (!account) throw new Error("Account not found");
+  if (account.isFrozen) throw new Error("Account is frozen");
   return account;
 }
 
-export async function getBalance(userId: string) {
-  const account = await getUserAccount(userId);
+export const getBalance = async (userId: string) => myAccount(userId);
 
-  return {
-    accountNumber: account.accountNumber,
-    balance: account.balance,
-  };
-}
-
-export async function getHistory(userId: string, page = DEFAULT_PAGE, limit = DEFAULT_LIMIT) {
-  const account = await getUserAccount(userId);
-  const safePage = Math.max(page, DEFAULT_PAGE);
-  const safeLimit = Math.min(Math.max(limit, 1), MAX_LIMIT);
-  const where = {
-    OR: [{ fromAccountId: account.id }, { toAccountId: account.id }],
-  };
-
-  const [items, total] = await Promise.all([
-    prisma.transaction.findMany({
-      where,
-      orderBy: {
-        createdAt: "desc",
-      },
-      skip: (safePage - 1) * safeLimit,
-      take: safeLimit,
-    }),
-    prisma.transaction.count({ where }),
-  ]);
-
-  return {
-    items,
-    pagination: {
-      page: safePage,
-      limit: safeLimit,
-      total,
-      totalPages: Math.ceil(total / safeLimit),
-    },
-  };
-}
-
-export async function transferMoney(userId: string, input: TransferInput) {
-  const data = transferSchema.parse(input);
-  const sender = await getUserAccount(userId);
-
-  checkTransferRules(data.amount);
-
-  if (data.idempotencyKey) {
-    const existingTransaction = await prisma.transaction.findUnique({
-      where: { idempotencyKey: data.idempotencyKey },
-    });
-
-    if (existingTransaction) {
-      return existingTransaction;
-    }
-  }
-
-  if (sender.accountNumber === data.toAccountNumber) {
-    throw new Error("Cannot transfer money to the same account");
-  }
-
-  if (sender.isFrozen) {
-    throw new Error("Sender account is frozen");
-  }
-
-  const receiver = await prisma.account.findUnique({
-    where: { accountNumber: data.toAccountNumber },
-  });
-
-  if (!receiver) {
-    throw new Error("Receiver account not found");
-  }
-
-  if (receiver.isFrozen) {
-    throw new Error("Receiver account is frozen");
-  }
-
-  if (sender.balance < data.amount) {
-    throw new Error("Insufficient balance");
-  }
+export async function depositMoney(userId: string, input: unknown) {
+  const data = moneySchema.parse(input);
+  const account = await myAccount(userId);
 
   return prisma.$transaction(async (tx) => {
-    await tx.account.update({
-      where: { id: sender.id },
-      data: { balance: { decrement: data.amount } },
-    });
-
-    await tx.account.update({
-      where: { id: receiver.id },
+    const updatedAccount = await tx.account.update({
+      where: { id: account.id },
       data: { balance: { increment: data.amount } },
     });
 
     const transaction = await tx.transaction.create({
-      data: {
-        amount: data.amount,
-        type: "DEBIT",
-        idempotencyKey: data.idempotencyKey,
-        note: data.note,
-        fromAccountId: sender.id,
-        toAccountId: receiver.id,
-      },
+      data: { amount: data.amount, type: "CREDIT", note: data.note || "Deposit", toAccountId: account.id },
+    });
+
+    await tx.auditLog.create({ data: { userId, action: "DEPOSIT", details: `Amount ${data.amount}` } });
+
+    return { account: updatedAccount, transaction };
+  });
+}
+
+export async function withdrawMoney(userId: string, input: unknown) {
+  const data = moneySchema.parse(input);
+  const account = await myAccount(userId);
+
+  if (account.balance < data.amount) throw new Error("Insufficient balance");
+
+  return prisma.$transaction(async (tx) => {
+    const updatedAccount = await tx.account.update({
+      where: { id: account.id },
+      data: { balance: { decrement: data.amount } },
+    });
+
+    const transaction = await tx.transaction.create({
+      data: { amount: data.amount, type: "DEBIT", note: data.note || "Withdraw", fromAccountId: account.id },
+    });
+
+    await tx.auditLog.create({ data: { userId, action: "WITHDRAW", details: `Amount ${data.amount}` } });
+
+    return { account: updatedAccount, transaction };
+  });
+}
+
+export async function transferMoney(userId: string, input: unknown) {
+  const data = transferSchema.parse(input);
+  const sender = await myAccount(userId);
+
+  if (sender.accountNumber === data.toAccountNumber) throw new Error("Cannot transfer to same account");
+  if (sender.balance < data.amount) throw new Error("Insufficient balance");
+
+  const receiver = await prisma.account.findUnique({ where: { accountNumber: data.toAccountNumber } });
+  if (!receiver) throw new Error("Receiver account not found");
+  if (receiver.isFrozen) throw new Error("Receiver account is frozen");
+
+  return prisma.$transaction(async (tx) => {
+    await tx.account.update({ where: { id: sender.id }, data: { balance: { decrement: data.amount } } });
+    await tx.account.update({ where: { id: receiver.id }, data: { balance: { increment: data.amount } } });
+
+    const transaction = await tx.transaction.create({
+      data: { amount: data.amount, type: "DEBIT", note: data.note || "Transfer", fromAccountId: sender.id, toAccountId: receiver.id },
     });
 
     await tx.auditLog.create({
-      data: {
-        userId,
-        action: "TRANSFER_CREATED",
-        details: `${sender.accountNumber} to ${receiver.accountNumber}, amount ${data.amount}`,
-      },
+      data: { userId, action: "TRANSFER", details: `${sender.accountNumber} to ${receiver.accountNumber}, amount ${data.amount}` },
     });
 
     return transaction;
   });
 }
+
+export const getHistory = async (userId: string) => {
+  const account = await myAccount(userId);
+  return prisma.transaction.findMany({
+    where: { OR: [{ fromAccountId: account.id }, { toAccountId: account.id }] },
+    orderBy: { createdAt: "desc" },
+  });
+};

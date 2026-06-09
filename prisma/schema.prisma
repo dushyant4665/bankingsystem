@@ -49,7 +49,6 @@ model Account {
 
 model Transaction {
   id            String          @id @default(uuid())
-  idempotencyKey String?        @unique
   amount        Float
   type          TransactionType
   note          String?

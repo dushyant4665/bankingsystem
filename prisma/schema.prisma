@@ -1,9 +1,11 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
 }
 
 datasource db {
   provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 enum Role {
@@ -21,48 +23,92 @@ enum TransactionType {
   DEBIT
 }
 
+enum LedgerEntryType {
+  CREDIT
+  DEBIT
+}
+
 model User {
-  id           String   @id @default(uuid())
+  id           String       @id @default(cuid())
   name         String
-  email        String   @unique
-  phone        String?
+  email        String       @unique
   passwordHash String
-  role         Role     @default(CUSTOMER)
+  phone        String?
+  role         Role         @default(CUSTOMER)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
   account      Account?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  auditLogs    AuditLog[]
+
+  @@index([email])
 }
 
 model Account {
-  id            String        @id @default(uuid())
-  accountNumber String        @unique
-  accountType   AccountType   @default(SAVINGS)
-  balance       Float         @default(0)
-  isFrozen      Boolean       @default(false)
-  userId        String        @unique
-  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  sent          Transaction[] @relation("SentTransactions")
-  received      Transaction[] @relation("ReceivedTransactions")
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
+  id            String       @id @default(cuid())
+  userId        String       @unique
+  accountNumber String       @unique
+  accountType   AccountType  @default(SAVINGS)
+  balance       Float        @default(0)
+  isFrozen      Boolean      @default(false)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sentTransfers Transaction[] @relation("Sender")
+  receivedTransfers Transaction[] @relation("Receiver")
+  ledgerEntries LedgerEntry[]
+
+  @@index([accountNumber])
+  @@index([userId])
 }
 
 model Transaction {
-  id            String          @id @default(uuid())
+  id             String           @id @default(cuid())
+  fromAccountId   String?
+  toAccountId     String?
+  amount          Float
+  type            TransactionType
+  note            String?
+  idempotencyKey  String?          @unique
+  createdAt       DateTime         @default(now())
+
+  fromAccount     Account?         @relation("Sender", fields: [fromAccountId], references: [id], onDelete: SetNull)
+  toAccount       Account?         @relation("Receiver", fields: [toAccountId], references: [id], onDelete: SetNull)
+  ledgerEntries   LedgerEntry[]
+
+  @@index([fromAccountId])
+  @@index([toAccountId])
+  @@index([createdAt])
+}
+
+model LedgerEntry {
+  id            String          @id @default(cuid())
+  accountId     String
+  transactionId String?
+  entryType     LedgerEntryType
   amount        Float
-  type          TransactionType
+  balanceAfter  Float
   note          String?
-  fromAccountId String?
-  toAccountId   String?
-  fromAccount   Account?        @relation("SentTransactions", fields: [fromAccountId], references: [id])
-  toAccount     Account?        @relation("ReceivedTransactions", fields: [toAccountId], references: [id])
   createdAt     DateTime        @default(now())
+
+  account       Account         @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  transaction   Transaction?    @relation(fields: [transactionId], references: [id], onDelete: SetNull)
+
+  @@index([accountId])
+  @@index([transactionId])
+  @@index([createdAt])
 }
 
 model AuditLog {
-  id        String   @id @default(uuid())
+  id        String   @id @default(cuid())
   userId    String?
   action    String
-  details   String?
+  details   String?  @db.Text
   createdAt DateTime @default(now())
+
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([createdAt])
 }

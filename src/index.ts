@@ -1,6 +1,6 @@
 import cors from "cors";
 import dotenv from "dotenv";
-import express, { Request, Response } from "express";
+import express, { NextFunction, Request, Response } from "express";
 import adminRoutes from "./routes/adminRoutes";
 import authRoutes from "./routes/authRoutes";
 import transactionRoutes from "./routes/transactionRoutes";
@@ -10,33 +10,37 @@ import { swaggerSpec } from "./swagger";
 dotenv.config();
 
 const app = express();
-const port = Number(process.env.PORT) || 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 app.use(cors());
 app.use(express.json());
 
-app.get("/", (_req: Request, res: Response) => {
+app.get("/health", (_req: Request, res: Response) => {
   res.json({
     success: true,
-    message: "Banking System API",
-    routes: {
-      health: "GET /health",
-      docs: "GET /swagger.json",
+    message: "Server is running",
+    timestamp: new Date().toISOString(),
+  });
+});
+
+app.get("/", (_req: Request, res: Response) => {
+  res.json({
+    name: "Banking System API",
+    status: "healthy",
+    endpoints: {
       signup: "POST /api/auth/signup",
       login: "POST /api/auth/login",
-      profile: "GET /api/users/me",
+      me: "GET /api/users/me",
       balance: "GET /api/transactions/balance",
       deposit: "POST /api/transactions/deposit",
       withdraw: "POST /api/transactions/withdraw",
       transfer: "POST /api/transactions/transfer",
       history: "GET /api/transactions/history",
-      adminDashboard: "GET /api/admin/dashboard",
+      ledger: "GET /api/transactions/ledger",
+      admin: "GET /api/admin/dashboard",
+      swagger: "GET /swagger.json",
     },
   });
-});
-
-app.get("/health", (_req: Request, res: Response) => {
-  res.json({ success: true, message: "Server is running" });
 });
 
 app.get("/swagger.json", (_req: Request, res: Response) => {
@@ -55,6 +59,14 @@ app.use((req: Request, res: Response) => {
   });
 });
 
-app.listen(port, () => {
-  console.log(`Server running on http://localhost:${port}`);
+app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+  console.error(err);
+  res.status(500).json({
+    success: false,
+    message: "Internal server error",
+  });
+});
+
+app.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
 });

@@ -2,33 +2,82 @@ import { NextFunction, Request, Response } from "express";
 import jwt from "jsonwebtoken";
 import { prisma } from "../config/database";
 
-const SECRET = process.env.JWT_SECRET || "default_secret";
+type JwtPayload = {
+  sub?: string;
+};
 
-export interface AuthenticatedRequest extends Request {
-  user?: { id: string; email: string; role: string };
+function getJwtSecret() {
+  const secret = process.env.JWT_SECRET;
+
+  if (!secret) {
+    throw new Error("JWT_SECRET is missing");
+  }
+
+  return secret;
 }
 
-export const requireAuth = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-  const token = req.headers.authorization?.split(" ")[1];
-  if (!token) return res.status(401).json({ success: false, message: "Login token required" });
+export type AuthenticatedRequest = Request & {
+  user?: {
+    id: string;
+    email: string;
+    role: "CUSTOMER" | "ADMIN";
+  };
+  userId?: string;
+};
 
-  try {
-    const payload = jwt.verify(token, SECRET) as any;
-    const user = await prisma.user.findUnique({
-      where: { id: payload.sub },
-      select: { id: true, email: true, role: true },
-    });
-    if (!user) return res.status(401).json({ success: false, message: "User not found" });
-    req.user = user;
-    next();
-  } catch {
-    res.status(401).json({ success: false, message: "Invalid token" });
+async function loadUserFromToken(token: string) {
+  const decoded = jwt.verify(token, getJwtSecret()) as JwtPayload;
+
+  if (!decoded.sub) {
+    throw new Error("Invalid token");
   }
-};
 
-export const requireAdmin = async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-  await requireAuth(req, res, () => {
-    if (req.user?.role !== "ADMIN") return res.status(403).json({ success: false, message: "Admin only" });
-    next();
+  const user = await prisma.user.findUnique({
+    where: { id: decoded.sub },
+    select: { id: true, email: true, role: true },
   });
-};
+
+  if (!user) {
+    throw new Error("Invalid token");
+  }
+
+  return user;
+}
+
+export async function requireAuth(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+) {
+  try {
+    const header = req.headers.authorization || "";
+    const token = header.startsWith("Bearer ") ? header.slice(7) : "";
+
+    if (!token) {
+      return res.status(401).json({ success: false, message: "Missing bearer token" });
+    }
+
+    const user = await loadUserFromToken(token);
+    req.user = user;
+    req.userId = user.id;
+    return next();
+  } catch {
+    return res.status(401).json({ success: false, message: "Unauthorized" });
+  }
+}
+
+export async function requireAdmin(
+  req: AuthenticatedRequest,
+  res: Response,
+  next: NextFunction
+) {
+  await requireAuth(req, res, () => {
+    if (req.user?.role !== "ADMIN") {
+      return res.status(403).json({ success: false, message: "Admin access required" });
+    }
+
+    return next();
+  });
+}
+
+export const authenticate = requireAuth;

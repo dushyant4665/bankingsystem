@@ -1,13 +1,14 @@
 import { Router } from "express";
-import { balance, deposit, history, transfer, withdraw } from "../controllers/transactionController";
+import { TransactionController } from "../controllers/transactionController";
 import { requireAuth } from "../middleware/authMiddleware";
 
 const router = Router();
 
-router.get("/balance", requireAuth, balance);
-router.post("/deposit", requireAuth, deposit);
-router.post("/withdraw", requireAuth, withdraw);
-router.post("/transfer", requireAuth, transfer);
-router.get("/history", requireAuth, history);
+router.get("/balance", requireAuth, TransactionController.balance);
+router.post("/deposit", requireAuth, TransactionController.deposit);
+router.post("/withdraw", requireAuth, TransactionController.withdraw);
+router.post("/transfer", requireAuth, TransactionController.transfer);
+router.get("/history", requireAuth, TransactionController.history);
+router.get("/ledger", requireAuth, TransactionController.ledger);
 
 export default router;

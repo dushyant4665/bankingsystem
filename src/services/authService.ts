@@ -1,54 +1,138 @@
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
-import { z } from "zod";
 import { prisma } from "../config/database";
 
-const SECRET = process.env.JWT_SECRET || "default_secret";
+type SignupInput = {
+  name: string;
+  email: string;
+  password: string;
+  phone?: string;
+};
 
-const signupSchema = z.object({
-  name: z.string().trim().min(2),
-  email: z.string().trim().email().toLowerCase(),
-  password: z.string().min(6),
-  phone: z.string().trim().optional(),
-});
+type LoginInput = {
+  email: string;
+  password: string;
+};
 
-const loginSchema = z.object({
-  email: z.string().trim().email().toLowerCase(),
-  password: z.string().min(1),
-});
+function getJwtSecret() {
+  const secret = process.env.JWT_SECRET;
 
-const makeToken = (user: any) => 
-  jwt.sign({ sub: user.id, email: user.email, role: user.role }, SECRET, { expiresIn: "7d" });
-
-const makeAccountNumber = () => `ACC${Date.now()}${Math.floor(1000 + Math.random() * 9000)}`;
-
-export async function signup(input: unknown) {
-  const { password, ...data } = signupSchema.parse(input);
-
-  if (await prisma.user.findUnique({ where: { email: data.email } })) {
-    throw new Error("Email already exists");
+  if (!secret) {
+    throw new Error("JWT_SECRET is missing");
   }
 
-  const user = await prisma.user.create({
-    data: {
-      ...data,
-      passwordHash: await bcrypt.hash(password, 10),
-      role: data.email === process.env.ADMIN_EMAIL ? "ADMIN" : "CUSTOMER",
-      account: { create: { accountNumber: makeAccountNumber(), balance: 1000 } },
-    },
-    include: { account: true },
-  });
-
-  return { user, token: makeToken(user) };
+  return secret;
 }
 
-export async function login(input: unknown) {
-  const data = loginSchema.parse(input);
-  const user = await prisma.user.findUnique({ where: { email: data.email } });
+function createAccountNumber() {
+  return `ACC${Date.now()}${Math.floor(Math.random() * 1000)}`;
+}
 
-  if (!user || !(await bcrypt.compare(data.password, user.passwordHash))) {
-    throw new Error("Invalid email or password");
+function createToken(user: { id: string; email: string; role: string }) {
+  return jwt.sign(
+    { sub: user.id, email: user.email, role: user.role },
+    getJwtSecret(),
+    { expiresIn: "7d" }
+  );
+}
+
+function selectUserShape() {
+  return {
+    id: true,
+    name: true,
+    email: true,
+    phone: true,
+    role: true,
+    createdAt: true,
+    account: {
+      select: {
+        id: true,
+        accountNumber: true,
+        accountType: true,
+        balance: true,
+        isFrozen: true,
+      },
+    },
+  } as const;
+}
+
+export class AuthService {
+  static async signup(input: SignupInput) {
+    const email = input.email.toLowerCase().trim();
+
+    const existingUser = await prisma.user.findUnique({
+      where: { email },
+    });
+
+    if (existingUser) {
+      throw new Error("Email is already registered");
+    }
+
+    const passwordHash = await bcrypt.hash(input.password, 10);
+    const role = process.env.ADMIN_EMAIL?.toLowerCase() === email ? "ADMIN" : "CUSTOMER";
+
+    const user = await prisma.user.create({
+      data: {
+        name: input.name.trim(),
+        email,
+        phone: input.phone?.trim() || null,
+        passwordHash,
+        role,
+        account: {
+          create: {
+            accountNumber: createAccountNumber(),
+            balance: 0,
+          },
+        },
+      },
+      select: selectUserShape(),
+    });
+
+    return {
+      user,
+      token: createToken({ id: user.id, email: user.email, role: user.role }),
+    };
   }
 
-  return { user, token: makeToken(user) };
+  static async login(input: LoginInput) {
+    const email = input.email.toLowerCase().trim();
+
+    const user = await prisma.user.findUnique({
+      where: { email },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        role: true,
+        createdAt: true,
+        passwordHash: true,
+        account: {
+          select: {
+            id: true,
+            accountNumber: true,
+            accountType: true,
+            balance: true,
+            isFrozen: true,
+          },
+        },
+      },
+    });
+
+    if (!user) {
+      throw new Error("Invalid email or password");
+    }
+
+    const ok = await bcrypt.compare(input.password, user.passwordHash);
+    if (!ok) {
+      throw new Error("Invalid email or password");
+    }
+
+    const { passwordHash, ...safeUser } = user;
+
+    return {
+      user: safeUser,
+      token: createToken({ id: safeUser.id, email: safeUser.email, role: safeUser.role }),
+    };
+  }
 }

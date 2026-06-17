@@ -1,19 +1,37 @@
 # ACID-Compliant Transactional Ledger API
 
-A simple banking and ledger backend built with TypeScript, Express.js, Prisma ORM, PostgreSQL, JWT, bcrypt, and Redis.
+Simple banking API built with TypeScript, Express.js, Prisma, PostgreSQL, JWT, bcrypt, Redis, and Docker.
 
-## What this project does
+## What it does
 
-- Signup and login with hashed passwords and JWT tokens
-- Create one account per user
-- Deposit, withdraw, and transfer money
-- Protect money routes with JWT auth and role-based admin checks
-- Use row-level locking inside database transactions to avoid double-spend
-- Keep append-only transaction, audit, and ledger records
-- Use Redis for auth rate limiting and admin dashboard caching
-- Support Docker for PostgreSQL, Redis, and the app
+- signup and login
+- create one account per user
+- deposit, withdraw, transfer
+- view balance, history, and ledger
+- admin can freeze and unfreeze accounts
+- audit logs for important actions
 
-## Tech Stack
+## Simple flow
+
+```mermaid
+flowchart TD
+  Client[Client / Postman] --> API[Express API]
+  API --> Auth[JWT Auth]
+  API --> Ctrl[Controller]
+  Ctrl --> Svc[Service]
+  Svc --> Tx[Prisma Transaction]
+  Tx --> PG[(PostgreSQL)]
+  Svc --> Redis[(Redis)]
+```
+
+## Main idea
+
+- money changes run inside `prisma.$transaction`
+- account rows are locked with `SELECT ... FOR UPDATE`
+- that stops two requests from using the same balance at the same time
+- ledger and audit rows are written after money updates
+
+## Tech stack
 
 - Node.js
 - TypeScript
@@ -25,68 +43,7 @@ A simple banking and ledger backend built with TypeScript, Express.js, Prisma OR
 - Redis
 - Docker
 
-## Core Idea
-
-The main money-changing operations run inside `prisma.$transaction`.
-
-This means:
-
-- account balance updates happen together
-- transaction rows are written together
-- audit and ledger rows are written together
-- if one step fails, the whole operation rolls back
-
-The app also uses raw SQL row locking:
-
-```sql
-SELECT id FROM "Account" WHERE id = $1 FOR UPDATE
-```
-
-That stops two requests from spending the same money at the same time.
-
-## Project Structure
-
-```text
-src/
-  config/        Prisma and Redis setup
-  controllers/   HTTP request handlers
-  middleware/    Auth, admin guard, rate limit, error handling
-  routes/        API route definitions
-  services/      Business logic
-  swagger.ts     Simple OpenAPI JSON
-  index.ts       App entry point
-
-prisma/
-  schema.prisma  Database models
-  migrations/    SQL migrations
-```
-
-## Database Models
-
-- `User` stores login and profile data
-- `Account` stores account number, balance, and freeze state
-- `Transaction` stores deposit, withdraw, and transfer records
-- `LedgerEntry` stores append-only ledger rows
-- `AuditLog` stores admin and money-action audit logs
-
-## Security
-
-- Passwords are hashed with bcrypt
-- JWT is required for protected routes
-- Admin routes re-check role from database
-- Frozen accounts cannot do money operations
-- Redis rate limits auth endpoints
-
-## Redis Usage
-
-Redis is used for:
-
-- auth rate limiting
-- admin dashboard cache
-
-If Redis is not running, the app still works. It just skips cache/rate-limit behavior.
-
-## API Endpoints
+## API
 
 ### Public
 
@@ -122,53 +79,39 @@ If Redis is not running, the app still works. It just skips cache/rate-limit beh
 - `PATCH /api/admin/accounts/:accountNumber/freeze`
 - `PATCH /api/admin/accounts/:accountNumber/unfreeze`
 
-## Local Setup
+## Run locally
 
-### 1. Install dependencies
+1. Install deps
 
 ```bash
 npm install
 ```
 
-### 2. Start PostgreSQL and Redis with Docker
+2. Start DB and Redis
 
 ```bash
 docker compose up -d postgres redis
 ```
 
-### 3. Run Prisma migration
+3. Run Prisma migration
 
 ```bash
 npx.cmd prisma migrate dev
 ```
 
-### 4. Start the API
+4. Start app
 
 ```bash
 npm run dev
 ```
 
-### 5. Check health
-
-```http
-GET http://localhost:3000/health
-```
-
-## Docker Full Run
-
-Start everything together:
+## Run with Docker
 
 ```bash
 docker compose up --build
 ```
 
-This starts:
-
-- PostgreSQL container
-- Redis container
-- API container
-
-## Prisma Commands
+## Prisma commands
 
 Generate client:
 
@@ -176,27 +119,27 @@ Generate client:
 npx.cmd prisma generate
 ```
 
-Create and apply a migration:
+Create migration:
 
 ```bash
 npx.cmd prisma migrate dev --name add_ledger_entries
 ```
 
-Deploy existing migrations:
+Deploy migrations:
 
 ```bash
 npx.cmd prisma migrate deploy
 ```
 
-## Seeing Data in PostgreSQL
+## See DB data
 
-Open a shell inside the database container:
+Open psql:
 
 ```bash
 docker exec -it banking_db psql -U postgres -d banking
 ```
 
-Useful SQL:
+Useful queries:
 
 ```sql
 \dt
@@ -213,7 +156,7 @@ Exit:
 \q
 ```
 
-## Environment Variables
+## Env
 
 ```env
 NODE_ENV=development
@@ -226,19 +169,7 @@ ADMIN_EMAIL="dushyantkhandelwal4665@gmail.com"
 
 ## Notes
 
-- Money is stored as `Float` in this simple project
-- Ledger entries are append-only from the app side
-- Admin dashboard is cached in Redis for 30 seconds
-- Auth routes are rate-limited through Redis
+- money is stored as `Float` in this simple project
+- Redis is used for auth rate limiting and dashboard cache
+- if Redis is off, the app still works
 
-## Build
-
-```bash
-npm run build
-```
-
-## Start Compiled App
-
-```bash
-npm start
-```

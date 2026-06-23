@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "../config/database";
 
 type MoneyInput = {
@@ -11,10 +12,21 @@ type TransferInput = MoneyInput & {
   toAccountNumber: string;
 };
 
-type TxClient = any;
+type TxClient = Prisma.TransactionClient;
+
+const MAX_TRANSACTION_RETRIES = 3;
 
 async function lockAccount(tx: TxClient, accountId: string) {
   await tx.$queryRaw`SELECT id FROM "Account" WHERE id = ${accountId} FOR UPDATE`;
+}
+
+async function lockAccounts(tx: TxClient, accountIds: string[]) {
+  // Sort first so every transfer locks rows in the same order and avoids deadlocks.
+  const uniqueAccountIds = [...new Set(accountIds)].sort();
+
+  for (const accountId of uniqueAccountIds) {
+    await lockAccount(tx, accountId);
+  }
 }
 
 async function getUserAccount(tx: TxClient, userId: string) {
@@ -63,6 +75,83 @@ async function createLedgerEntry(
   });
 }
 
+function isRetryableTransactionError(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const err = error as { code?: string; message?: string };
+
+  return (
+    err.code === "P2034" ||
+    err.message?.includes("deadlock") ||
+    err.message?.includes("serialization")
+  );
+}
+
+function isUniqueConstraintError(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  return (error as { code?: string }).code === "P2002";
+}
+
+async function runSerializableTransaction<T>(work: (tx: TxClient) => Promise<T>) {
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= MAX_TRANSACTION_RETRIES; attempt += 1) {
+    try {
+      return await prisma.$transaction(work, {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      });
+    } catch (error) {
+      lastError = error;
+
+      if (attempt < MAX_TRANSACTION_RETRIES && isRetryableTransactionError(error)) {
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw lastError;
+}
+
+async function runIdempotentTransaction<T>(
+  idempotencyKey: string | undefined,
+  work: (tx: TxClient) => Promise<T>
+) {
+  try {
+    return await runSerializableTransaction(work);
+  } catch (error) {
+    if (!idempotencyKey || !isUniqueConstraintError(error)) {
+      throw error;
+    }
+
+    const existing = await prisma.transaction.findUnique({
+      where: { idempotencyKey },
+    });
+
+    if (existing) {
+      return existing as T;
+    }
+
+    throw error;
+  }
+}
+
+async function getExistingTransaction(tx: TxClient, idempotencyKey?: string) {
+  if (!idempotencyKey) {
+    return null;
+  }
+
+  return tx.transaction.findUnique({
+    where: { idempotencyKey },
+  });
+}
+
 export class TransactionService {
   static async getBalance(userId: string) {
     const account = await prisma.account.findUnique({
@@ -92,17 +181,13 @@ export class TransactionService {
       throw new Error("Amount must be greater than 0");
     }
 
-    if (input.idempotencyKey) {
-      const existing = await prisma.transaction.findUnique({
-        where: { idempotencyKey: input.idempotencyKey },
-      });
+    return runIdempotentTransaction(input.idempotencyKey, async (tx) => {
+      const existing = await getExistingTransaction(tx, input.idempotencyKey);
 
       if (existing) {
         return existing;
       }
-    }
 
-    return prisma.$transaction(async (tx: any) => {
       const account = await getUserAccount(tx, input.userId);
       await lockAccount(tx, account.id);
 
@@ -160,17 +245,13 @@ export class TransactionService {
       throw new Error("Amount must be greater than 0");
     }
 
-    if (input.idempotencyKey) {
-      const existing = await prisma.transaction.findUnique({
-        where: { idempotencyKey: input.idempotencyKey },
-      });
+    return runIdempotentTransaction(input.idempotencyKey, async (tx) => {
+      const existing = await getExistingTransaction(tx, input.idempotencyKey);
 
       if (existing) {
         return existing;
       }
-    }
 
-    return prisma.$transaction(async (tx: any) => {
       const account = await getUserAccount(tx, input.userId);
       await lockAccount(tx, account.id);
 
@@ -230,17 +311,13 @@ export class TransactionService {
       throw new Error("Amount must be greater than 0");
     }
 
-    if (input.idempotencyKey) {
-      const existing = await prisma.transaction.findUnique({
-        where: { idempotencyKey: input.idempotencyKey },
-      });
+    return runIdempotentTransaction(input.idempotencyKey, async (tx) => {
+      const existing = await getExistingTransaction(tx, input.idempotencyKey);
 
       if (existing) {
         return existing;
       }
-    }
 
-    return prisma.$transaction(async (tx: any) => {
       const fromAccount = await getUserAccount(tx, input.userId);
       const toAccount = await getAccountByNumber(tx, input.toAccountNumber);
 
@@ -248,13 +325,7 @@ export class TransactionService {
         throw new Error("Cannot transfer to the same account");
       }
 
-      const [firstLock, secondLock] =
-        fromAccount.id < toAccount.id
-          ? [fromAccount.id, toAccount.id]
-          : [toAccount.id, fromAccount.id];
-
-      await lockAccount(tx, firstLock);
-      await lockAccount(tx, secondLock);
+      await lockAccounts(tx, [fromAccount.id, toAccount.id]);
 
       const freshFrom = await tx.account.findUnique({ where: { id: fromAccount.id } });
       const freshTo = await tx.account.findUnique({ where: { id: toAccount.id } });
@@ -280,8 +351,8 @@ export class TransactionService {
         data: { balance: { increment: input.amount } },
       });
 
-      // Double-entry style: one debit row and one credit row.
-      const debit = await tx.transaction.create({
+      // One transfer row represents the movement of money.
+      const transaction = await tx.transaction.create({
         data: {
           fromAccountId: freshFrom.id,
           toAccountId: freshTo.id,
@@ -292,19 +363,9 @@ export class TransactionService {
         },
       });
 
-      const credit = await tx.transaction.create({
-        data: {
-          fromAccountId: freshFrom.id,
-          toAccountId: freshTo.id,
-          amount: input.amount,
-          type: "CREDIT",
-          note: input.note,
-        },
-      });
-
       await createLedgerEntry(tx, {
         accountId: freshFrom.id,
-        transactionId: debit.id,
+        transactionId: transaction.id,
         entryType: "DEBIT",
         amount: input.amount,
         balanceAfter: freshFrom.balance - input.amount,
@@ -313,7 +374,7 @@ export class TransactionService {
 
       await createLedgerEntry(tx, {
         accountId: freshTo.id,
-        transactionId: credit.id,
+        transactionId: transaction.id,
         entryType: "CREDIT",
         amount: input.amount,
         balanceAfter: freshTo.balance + input.amount,
@@ -332,7 +393,7 @@ export class TransactionService {
         },
       });
 
-      return debit;
+      return transaction;
     });
   }
 

@@ -6,6 +6,14 @@ type JwtPayload = {
   sub?: string;
 };
 
+function extractBearerToken(headerValue: string | undefined) {
+  if (!headerValue?.startsWith("Bearer ")) {
+    return "";
+  }
+
+  return headerValue.slice(7);
+}
+
 function getJwtSecret() {
   const secret = process.env.JWT_SECRET;
 
@@ -14,6 +22,14 @@ function getJwtSecret() {
   }
 
   return secret;
+}
+
+function unauthorized(res: Response, message: string) {
+  return res.status(401).json({ success: false, message });
+}
+
+function forbidden(res: Response, message: string) {
+  return res.status(403).json({ success: false, message });
 }
 
 export type AuthenticatedRequest = Request & {
@@ -50,11 +66,10 @@ export async function requireAuth(
   next: NextFunction
 ) {
   try {
-    const header = req.headers.authorization || "";
-    const token = header.startsWith("Bearer ") ? header.slice(7) : "";
+    const token = extractBearerToken(req.headers.authorization);
 
     if (!token) {
-      return res.status(401).json({ success: false, message: "Missing bearer token" });
+      return unauthorized(res, "Missing bearer token");
     }
 
     const user = await loadUserFromToken(token);
@@ -62,7 +77,7 @@ export async function requireAuth(
     req.userId = user.id;
     return next();
   } catch {
-    return res.status(401).json({ success: false, message: "Unauthorized" });
+    return unauthorized(res, "Unauthorized");
   }
 }
 
@@ -71,13 +86,25 @@ export async function requireAdmin(
   res: Response,
   next: NextFunction
 ) {
-  await requireAuth(req, res, () => {
-    if (req.user?.role !== "ADMIN") {
-      return res.status(403).json({ success: false, message: "Admin access required" });
+  try {
+    const token = extractBearerToken(req.headers.authorization);
+
+    if (!token) {
+      return unauthorized(res, "Missing bearer token");
+    }
+
+    const user = await loadUserFromToken(token);
+    req.user = user;
+    req.userId = user.id;
+
+    if (user.role !== "ADMIN") {
+      return forbidden(res, "Admin access required");
     }
 
     return next();
-  });
+  } catch {
+    return unauthorized(res, "Unauthorized");
+  }
 }
 
 export const authenticate = requireAuth;
